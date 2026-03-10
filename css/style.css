@@ -138,6 +138,15 @@ body {
   background: #555;
 }
 
+.btn-arduino {
+  background: var(--color-green);
+  color: #fff;
+}
+.btn-arduino:hover { background: #3de680; }
+.btn-arduino.active {
+  background: #555;
+}
+
 .btn-secondary {
   background: var(--color-surface-alt);
   color: var(--color-text);
