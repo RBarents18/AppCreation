@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HeartBeat Monitor</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- Chart.js for real-time visualization (local copy) -->
+  <script src="js/chart.umd.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-icon">❤️</div>
+      <h1>HeartBeat Monitor</h1>
+      <p class="subtitle">Real-time heart rate tracking interface</p>
+    </header>
+
+    <!-- Connection Panel -->
+    <section class="panel connection-panel">
+      <h2>Sensor Connection</h2>
+      <div class="connection-controls">
+        <button id="btn-bluetooth" class="btn btn-bluetooth" title="Connect to a real Bluetooth heart rate sensor">
+          🔵 Connect Bluetooth Sensor
+        </button>
+        <span class="divider">or</span>
+        <button id="btn-simulate" class="btn btn-simulate">
+          ▶ Start Simulation
+        </button>
+      </div>
+      <div id="connection-status" class="status-badge status-disconnected">
+        ● Disconnected
+      </div>
+    </section>
+
+    <!-- Live BPM Display -->
+    <section class="panel bpm-panel">
+      <div class="bpm-display">
+        <div class="heart-icon" id="heart-icon">❤️</div>
+        <div class="bpm-value" id="bpm-value">--</div>
+        <div class="bpm-label">BPM</div>
+      </div>
+      <div class="bpm-zone" id="bpm-zone">—</div>
+    </section>
+
+    <!-- Statistics -->
+    <section class="panel stats-panel">
+      <h2>Session Statistics</h2>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-avg">--</div>
+          <div class="stat-label">Average BPM</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-min">--</div>
+          <div class="stat-label">Min BPM</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-max">--</div>
+          <div class="stat-label">Max BPM</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-duration">0s</div>
+          <div class="stat-label">Duration</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Real-time Chart -->
+    <section class="panel chart-panel">
+      <div class="chart-header">
+        <h2>Heart Rate Over Time</h2>
+        <button id="btn-clear" class="btn btn-secondary btn-small">Clear</button>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="hr-chart"></canvas>
+      </div>
+    </section>
+
+    <!-- Data Log -->
+    <section class="panel log-panel">
+      <div class="log-header">
+        <h2>Data Log</h2>
+        <button id="btn-export" class="btn btn-secondary btn-small">⬇ Export CSV</button>
+      </div>
+      <div class="log-scroll" id="data-log">
+        <p class="log-placeholder">Readings will appear here once monitoring starts.</p>
+      </div>
+    </section>
+
+    <footer class="app-footer">
+      <p>Web Bluetooth API required for physical sensor connection. Use simulation mode for testing.</p>
+    </footer>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
