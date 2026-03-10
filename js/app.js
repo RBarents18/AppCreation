@@ -1,10 +1,13 @@
 /**
  * HeartBeat Monitor – Application Logic
  *
- * Supports two data sources:
+ * Supports three data sources:
  *   1. Simulation – generates realistic heart rate data locally (no hardware needed).
  *   2. Web Bluetooth – connects to any BLE device that exposes the standard
  *      "Heart Rate" GATT service (UUID 0x180D), e.g. chest straps and wristbands.
+ *   3. Arduino Serial – connects to an Arduino Uno (or compatible board) via USB
+ *      using the Web Serial API.  The Arduino should send one BPM integer per line
+ *      over its hardware serial port (9600 baud), e.g. Serial.println(bpm).
  *
  * Data is charted in real time with Chart.js and can be exported as CSV.
  */
@@ -30,13 +33,15 @@ const ZONES = [
    ════════════════════════════════════════════════════ */
 const state = {
   running:        false,
-  source:         null,   // 'simulation' | 'bluetooth'
+  source:         null,   // 'simulation' | 'bluetooth' | 'arduino'
   readings:       [],     // { timestamp: Date, bpm: number }
   sessionStart:   null,
   simulatorTimer: null,
   durationTimer:  null,
   btDevice:       null,
   btCharacteristic: null,
+  arduinoPort:    null,   // SerialPort object (Web Serial API)
+  arduinoReader:  null,   // ReadableStreamDefaultReader
 };
 
 /* ════════════════════════════════════════════════════
@@ -46,6 +51,7 @@ const $ = id => document.getElementById(id);
 
 const dom = {
   btnBluetooth:  $('btn-bluetooth'),
+  btnArduino:    $('btn-arduino'),
   btnSimulate:   $('btn-simulate'),
   btnClear:      $('btn-clear'),
   btnExport:     $('btn-export'),
@@ -245,6 +251,7 @@ function startSimulation() {
   dom.btnSimulate.textContent = '⏹ Stop Simulation';
   dom.btnSimulate.classList.add('active');
   dom.btnBluetooth.disabled = true;
+  dom.btnArduino.disabled   = true;
 
   // Fire immediately, then every second
   recordReading(nextSimulatedBpm());
@@ -263,6 +270,7 @@ function stopSimulation() {
   dom.btnSimulate.textContent = '▶ Start Simulation';
   dom.btnSimulate.classList.remove('active');
   dom.btnBluetooth.disabled = false;
+  dom.btnArduino.disabled   = false;
 }
 
 /* ════════════════════════════════════════════════════
@@ -292,6 +300,7 @@ async function connectBluetooth() {
   try {
     setStatus('Scanning…', 'status-simulating');
     dom.btnBluetooth.disabled = true;
+    dom.btnArduino.disabled   = true;
     dom.btnSimulate.disabled  = true;
 
     const device = await navigator.bluetooth.requestDevice({
@@ -315,6 +324,7 @@ async function connectBluetooth() {
 
     setStatus(`Connected – ${device.name || 'BLE Device'}`, 'status-connected');
     dom.btnBluetooth.textContent = '🔵 Disconnect';
+    dom.btnArduino.disabled  = true;
     dom.btnSimulate.disabled = true;
 
     state.durationTimer = setInterval(() => { dom.statDuration.textContent = sessionDuration(); }, 1000);
@@ -326,6 +336,7 @@ async function connectBluetooth() {
     }
     setStatus('Disconnected', 'status-disconnected');
     dom.btnBluetooth.disabled = false;
+    dom.btnArduino.disabled   = false;
     dom.btnSimulate.disabled  = false;
   }
 }
@@ -358,7 +369,169 @@ function onBluetoothDisconnected() {
   setStatus('Disconnected', 'status-disconnected');
   dom.btnBluetooth.textContent = '🔵 Connect Bluetooth Sensor';
   dom.btnBluetooth.disabled    = false;
+  dom.btnArduino.disabled      = false;
   dom.btnSimulate.disabled     = false;
+}
+
+/* ════════════════════════════════════════════════════
+   Arduino Serial (Web Serial API)
+   ════════════════════════════════════════════════════ */
+
+/**
+ * Connect to an Arduino Uno (or compatible board) via USB serial.
+ *
+ * The Arduino sketch should send one BPM reading per line at 9600 baud.
+ * Supported line formats:
+ *   "72"             – plain integer   (Serial.println(bpm))
+ *   "BPM: 72"        – labelled
+ *   "HR: 72"         – abbreviated label
+ *   "Heart Rate: 72" – verbose label
+ */
+async function connectArduino() {
+  if (!navigator.serial) {
+    alert(
+      'Web Serial API is not supported in this browser.\n\n' +
+      'Try Chrome 89+ or Edge 89+ on desktop.\n' +
+      'For other browsers, use Simulation mode instead.'
+    );
+    return;
+  }
+
+  try {
+    setStatus('Opening port…', 'status-simulating');
+    dom.btnArduino.disabled   = true;
+    dom.btnBluetooth.disabled = true;
+    dom.btnSimulate.disabled  = true;
+
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+    state.arduinoPort = port;
+
+    state.source       = 'arduino';
+    state.running      = true;
+    state.sessionStart = Date.now();
+
+    setStatus('Connected – Arduino', 'status-connected');
+    dom.btnArduino.textContent = '🔌 Disconnect Arduino';
+    dom.btnArduino.classList.add('active');
+
+    state.durationTimer = setInterval(() => { dom.statDuration.textContent = sessionDuration(); }, 1000);
+
+    // Start non-blocking read loop
+    readArduinoSerial(port);
+
+  } catch (err) {
+    if (err.name !== 'NotFoundError') { // user cancelled port chooser
+      console.error('Arduino serial error:', err);
+      alert(`Arduino connection failed:\n${err.message}`);
+    }
+    setStatus('Disconnected', 'status-disconnected');
+    dom.btnArduino.disabled   = false;
+    dom.btnBluetooth.disabled = false;
+    dom.btnSimulate.disabled  = false;
+  }
+}
+
+/**
+ * Continuously read lines from the serial port and forward BPM values.
+ * Runs asynchronously; cleans up and calls onArduinoDisconnected() when done.
+ */
+async function readArduinoSerial(port) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const reader = port.readable.getReader();
+  state.arduinoReader = reader;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process every complete line; keep any trailing partial line in buffer
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const bpm = parseArduinoBpm(line.trim());
+        if (bpm !== null) recordReading(bpm);
+      }
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      console.error('Arduino serial read error:', err);
+    }
+  } finally {
+    reader.releaseLock();
+    state.arduinoReader = null;
+  }
+
+  // Close the port once the read loop exits (disconnect or error)
+  if (state.arduinoPort) {
+    try { await state.arduinoPort.close(); } catch (_) { /* ignore */ }
+    state.arduinoPort = null;
+  }
+  onArduinoDisconnected();
+}
+
+/**
+ * Parse a BPM integer from a single Arduino serial line.
+ * Returns null if the line doesn't look like a heart rate reading.
+ *
+ * Accepted formats (case-insensitive):
+ *   "72"             – bare integer
+ *   "BPM: 72"        – BPM keyword + colon
+ *   "HR: 72"         – HR abbreviation
+ *   "Heart Rate: 72" – full label
+ */
+function parseArduinoBpm(line) {
+  if (!line) return null;
+
+  let numStr = null;
+
+  // Bare integer line: "72"
+  if (/^\d+$/.test(line)) {
+    numStr = line;
+  } else {
+    // Labelled line: "BPM: 72", "HR:72", "Heart Rate: 72", etc.
+    const match = /\b(?:bpm|hr|heart[\s_-]?rate)\s*[:=]\s*(\d+)/i.exec(line);
+    if (match) numStr = match[1];
+  }
+
+  if (numStr === null) return null;
+
+  const bpm = parseInt(numStr, 10);
+  // Sanity check: valid resting-to-peak heart-rate range
+  if (bpm < 20 || bpm > 250) return null;
+  return bpm;
+}
+
+async function disconnectArduino() {
+  if (state.arduinoReader) {
+    try {
+      // Cancelling the reader resolves the pending read() with done=true,
+      // which lets readArduinoSerial exit cleanly and call onArduinoDisconnected.
+      await state.arduinoReader.cancel();
+    } catch (_) { /* ignore */ }
+  } else {
+    onArduinoDisconnected();
+  }
+}
+
+function onArduinoDisconnected() {
+  if (state.source !== 'arduino') return; // guard against double-call
+
+  clearInterval(state.durationTimer);
+  state.running = false;
+  state.source  = null;
+
+  setStatus('Disconnected', 'status-disconnected');
+  dom.btnArduino.textContent = '🔌 Connect Arduino';
+  dom.btnArduino.classList.remove('active');
+  dom.btnArduino.disabled    = false;
+  dom.btnBluetooth.disabled  = false;
+  dom.btnSimulate.disabled   = false;
 }
 
 /* ════════════════════════════════════════════════════
@@ -401,6 +574,14 @@ dom.btnBluetooth.addEventListener('click', () => {
     disconnectBluetooth();
   } else if (!state.running) {
     connectBluetooth();
+  }
+});
+
+dom.btnArduino.addEventListener('click', () => {
+  if (state.source === 'arduino') {
+    disconnectArduino();
+  } else if (!state.running) {
+    connectArduino();
   }
 });
 
